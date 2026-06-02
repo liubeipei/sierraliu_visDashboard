@@ -1,0 +1,7 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.DS_Store
+.workbuddy
+可视化看板_backup_*
