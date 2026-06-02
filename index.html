@@ -588,6 +588,7 @@ window.addEventListener('DOMContentLoaded', function () {
   'use strict';
 
   const STORAGE_KEY = 'promptviz:v1';
+  const LOCAL_DATA_KEY = 'promptviz:data:v1';
   const API_STATE_PATH = '/api/state';
 
   // ==== State ====
@@ -640,11 +641,11 @@ window.addEventListener('DOMContentLoaded', function () {
     }));
   }
 
-  async function loadServerState() {
+  function loadLocalDataState() {
     try {
-      const resp = await fetch(API_STATE_PATH, { method: 'GET' });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const payload = await resp.json();
+      const raw = localStorage.getItem(LOCAL_DATA_KEY);
+      if (!raw) return false;
+      const payload = JSON.parse(raw);
       if (!payload || !payload.state) return false;
       const incoming = payload.state;
       if (incoming.parsed && typeof incoming.parsed === 'object') {
@@ -661,12 +662,64 @@ window.addEventListener('DOMContentLoaded', function () {
       }
       return true;
     } catch (e) {
+      console.warn('[看板] 读取本地历史数据失败：', e.message);
+      return false;
+    }
+  }
+
+  function persistLocalDataState(reason) {
+    try {
+      const stateForSave = {
+        parsed: serializeForSave(state.parsed),
+        projectName: serializeForSave(state.projectName),
+        reports: serializeForSave(state.reports),
+      };
+      localStorage.setItem(LOCAL_DATA_KEY, JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        reason: reason || 'manual',
+        state: stateForSave,
+      }));
+      return true;
+    } catch (e) {
+      console.warn('[看板] 保存本地历史数据失败：', e.message);
+      return false;
+    }
+  }
+
+  function applyIncomingDataState(incoming) {
+    if (incoming.parsed && typeof incoming.parsed === 'object') {
+      state.parsed.t2i = incoming.parsed.t2i || null;
+      state.parsed.i2i = incoming.parsed.i2i || null;
+    }
+    if (incoming.projectName && typeof incoming.projectName === 'object') {
+      state.projectName.t2i = incoming.projectName.t2i || '';
+      state.projectName.i2i = incoming.projectName.i2i || '';
+    }
+    if (Array.isArray(incoming.reports)) {
+      state.reports = incoming.reports;
+      state.activeReportId = state.reports[0]?.id || null;
+    }
+  }
+
+  async function loadServerState() {
+    try {
+      const resp = await fetch(API_STATE_PATH, { method: 'GET' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const payload = await resp.json();
+      if (!payload || !payload.state) return false;
+      applyIncomingDataState(payload.state);
+      // 云端可用时同步缓存到本地，给静态模式兜底
+      persistLocalDataState('sync_from_server');
+      return true;
+    } catch (e) {
       console.warn('[看板] 后端状态加载失败，按当前会话继续：', e.message);
       return false;
     }
   }
 
   async function persistServerState(reason) {
+    // 总是先写本地，保证 GitHub Pages（无后端）可用
+    persistLocalDataState(reason);
     try {
       const stateForSave = {
         parsed: serializeForSave(state.parsed),
@@ -1466,11 +1519,14 @@ window.addEventListener('DOMContentLoaded', function () {
   });
 
   async function bootstrap() {
-    const loaded = await loadServerState();
+    const loadedFromServer = await loadServerState();
+    const loadedFromLocal = loadedFromServer ? false : loadLocalDataState();
     navigate('t2i');
     updateBadges();
-    if (loaded) {
-      toast('✅ 已恢复历史数据');
+    if (loadedFromServer) {
+      toast('✅ 已从云端恢复历史数据');
+    } else if (loadedFromLocal) {
+      toast('✅ 已从本地恢复历史数据');
     }
   }
 
