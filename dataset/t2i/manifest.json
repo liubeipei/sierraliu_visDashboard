@@ -1,0 +1,10 @@
+{
+  "dataType": "t2i",
+  "imageMode": "single",
+  "turnMode": "single",
+  "taxonomy": {
+    "ability": "dataset/taxonomy-ability.json",
+    "scene": "dataset/taxonomy-scene.json"
+  },
+  "weeks": []
+}

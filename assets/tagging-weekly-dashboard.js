@@ -213,35 +213,52 @@
     const granularity = cfg.granularity || 'full';
     const taxonomy = cfg.taxonomy || {};
 
+    // 外露分段按钮控件（替代下拉），返回带 .value getter 的对象，兼容旧的 dimSel.value 读法
+    function segmented(items, current, onChange) {
+      const wrap = el('div', 'tvd-seg');
+      const st = { value: current };
+      items.forEach((it) => {
+        const b = el('button', 'tvd-seg-btn' + (it.key === current ? ' active' : ''), escapeHtml(it.label));
+        b.dataset.key = it.key;
+        b.addEventListener('click', () => {
+          if (st.value === it.key) return;
+          st.value = it.key;
+          wrap.querySelectorAll('.tvd-seg-btn').forEach(x => x.classList.toggle('active', x.dataset.key === it.key));
+          if (onChange) onChange(it.key);
+        });
+        wrap.appendChild(b);
+      });
+      return { el: wrap, get value() { return st.value; } };
+    }
+    function ctrlGroup(parent, label, ctlEl) {
+      const g = el('div', 'tvd-ctrl-group');
+      g.appendChild(el('span', 'tvd-ctrl-label', label));
+      g.appendChild(ctlEl);
+      parent.appendChild(g);
+      return g;
+    }
+
     // 顶部控制条
     const ctrls = el('div', 'tvd-ctrls');
-    ctrls.appendChild(el('span', 'tvd-ck-label', '维度：'));
-    const dimSel = el('select', 'tvd-filter');
-    dimSel.innerHTML = AGG().DIMENSIONS.map(d => `<option value="${d.key}" ${d.key === dimension ? 'selected' : ''}>${d.label}</option>`).join('');
-    ctrls.appendChild(dimSel);
-    ctrls.appendChild(el('span', 'tvd-ck-label', '粒度：'));
-    const granSel = el('select', 'tvd-filter');
-    granSel.innerHTML = AGG().GRANULARITY.map(g => `<option value="${g.key}" ${g.key === granularity ? 'selected' : ''}>${g.label}</option>`).join('');
-    ctrls.appendChild(granSel);
-    ctrls.appendChild(el('span', 'tvd-ck-label', 'TopN：'));
-    const topSel = el('select', 'tvd-filter');
-    topSel.innerHTML = `<option value="10">Top 10</option><option value="20">Top 20</option>`;
-    ctrls.appendChild(topSel);
+    const dimSel = segmented(AGG().DIMENSIONS.map(d => ({ key: d.key, label: d.label })), dimension, () => { emitConfig(); paint(); });
+    ctrlGroup(ctrls, '维度', dimSel.el);
+    const granSel = segmented(AGG().GRANULARITY.map(g => ({ key: g.key, label: g.label })), granularity, () => { emitConfig(); paint(); });
+    ctrlGroup(ctrls, '粒度', granSel.el);
+    const topSel = segmented([{ key: '10', label: 'Top 10' }, { key: '20', label: 'Top 20' }], '10', () => paint());
+    ctrlGroup(ctrls, '榜单', topSel.el);
 
     // 周选择：当前周 vs 基准周（趋势图始终展示全部周，环比类图表用所选两周）
     const weekOpts = weeks.map((w, i) => `<option value="${i}">${escapeHtml(w.label || ('第' + (i + 1) + '周'))}</option>`).join('');
-    ctrls.appendChild(el('span', 'tvd-ck-label', '当前周：'));
     const curSel = el('select', 'tvd-filter');
     curSel.innerHTML = weekOpts;
     curSel.value = String(weeks.length - 1);
     curSel.disabled = weeks.length < 2;
-    ctrls.appendChild(curSel);
-    ctrls.appendChild(el('span', 'tvd-ck-label', '对比基准：'));
+    ctrlGroup(ctrls, '当前周', curSel);
     const baseSel = el('select', 'tvd-filter');
     baseSel.innerHTML = weekOpts;
     baseSel.value = String(Math.max(0, weeks.length - 2));
     baseSel.disabled = weeks.length < 2;
-    ctrls.appendChild(baseSel);
+    ctrlGroup(ctrls, '对比基准', baseSel);
 
     const meta = el('span', 'tvd-ck-label', `共 ${weeks.length} 周`);
     meta.style.marginLeft = 'auto';
@@ -255,9 +272,6 @@
         cfg.onConfigChange({ dimension: dimSel.value, granularity: granSel.value });
       }
     }
-    dimSel.addEventListener('change', () => { emitConfig(); paint(); });
-    granSel.addEventListener('change', () => { emitConfig(); paint(); });
-    topSel.addEventListener('change', () => paint());
     curSel.addEventListener('change', () => {
       // 基准周默认跟随当前周的前一周，但用户可再自由调整
       const ci = parseInt(curSel.value, 10);
@@ -304,14 +318,14 @@
       layer(body, '2', '结构与分布 · Structure', `${dimLabel}的类目构成、覆盖广度与集中度`);
       const l1Cur = AGG().summarizeWeek(curWeek.parsed, { dimension: dimSel.value, granularity: 'l1', taxonomy });
 
-      const secStruct = section(body, `🍩 ${dimLabel}一级类目占比 & 覆盖 / 集中度`);
-      hint(secStruct, '🔍 点击扇区查看 case');
+      const secStruct = section(body, `📊 ${dimLabel}一级类目占比 & 覆盖 / 集中度`);
+      hint(secStruct, '🔍 点击柱状查看 case');
       const gS = el('div', 'tvd-grid-2'); secStruct.appendChild(gS);
-      const donutBlock = el('div', 'tvd-chart-block tvd-clickable');
-      donutBlock.appendChild(el('div', 'tvd-chart-title', `${curLab} · 一级类目占比`));
-      gS.appendChild(donutBlock);
-      donutChart(mkChart(donutBlock, 300), [...l1Cur.hitMap.entries()].sort((a, b) => b[1] - a[1]), {
-        centerLabel: 'L1',
+      const l1Block = el('div', 'tvd-chart-block tvd-clickable');
+      l1Block.appendChild(el('div', 'tvd-chart-title', `${curLab} · 一级类目占比（横向柱状）`));
+      gS.appendChild(l1Block);
+      shareBarChart(mkChart(l1Block, Math.max(260, l1Cur.hitMap.size * 30 + 50)), [{ label: curLab, summary: l1Cur }], {
+        color: '#5B8FF9',
         onClick: (name) => openCases(`${name} · ${curLab} 全部 case`, casesFor(curWeek, name, { granularity: 'l1' }), `一级类目「${name}」`),
       });
       const covBlock = el('div', 'tvd-chart-block');
@@ -323,12 +337,14 @@
         { name: 'CR10', data: series.trends.cr10 },
       ], { percent: true, yName: '比率' });
 
-      if (series.previous) {
-        const secRadar = section(body, `🕸️ 二级类目结构雷达（${cmpLabel} · Top 8 占比）`);
-        const radarWeeks = [baseWeek, curWeek].filter(Boolean);
-        const l2Weeks = radarWeeks.map(w => ({ label: w.label, summary: AGG().summarizeWeek(w.parsed, { dimension: dimSel.value, granularity: 'l2', taxonomy }) }));
-        radarChart(mkChart(secRadar, 380), l2Weeks, dimLabel, 8);
-      }
+      // 二级类目占比（横向柱状，展示全部 L2；有对比周则双周分组）
+      const secL2 = section(body, series.previous ? `📊 二级类目占比（${cmpLabel} · 全部 L2）` : `📊 ${curLab} 二级类目占比（全部 L2）`);
+      hint(secL2, '🔍 点击柱状查看 case');
+      const l2Weeks = [baseWeek, curWeek].filter(Boolean).map(w => ({ label: w.label, summary: AGG().summarizeWeek(w.parsed, { dimension: dimSel.value, granularity: 'l2', taxonomy }) }));
+      const l2Count = new Set([].concat(...l2Weeks.map(w => [...w.summary.hitMap.keys()]))).size;
+      shareBarChart(mkChart(secL2, Math.max(320, l2Count * (l2Weeks.length > 1 ? 30 : 24) + 70)), l2Weeks, {
+        onClick: (name) => openCases(`${name} · ${curLab} 全部 case`, casesFor(curWeek, name, { granularity: 'l2' }), `二级类目「${name}」`),
+      });
 
       // ============ 层级 3 · 排名与变动 ============
       layer(body, '3', '排名与变动 · Ranking', `Top ${topN} ${dimLabel}排名、环比位移与周增减`);
@@ -675,14 +691,52 @@
         color: opts.colors || LINE_COLORS,
         graphic: opts.centerLabel ? [{ type: 'text', left: '38%', top: '52%', z: 10, style: { text: opts.centerLabel + '\n' + total, textAlign: 'center', textVerticalAlign: 'middle', fill: '#333', fontSize: 13, fontWeight: 'bold' } }] : undefined,
         series: [{
-          type: 'pie', radius: ['46%', '70%'], center: ['38%', '52%'], avoidLabelOverlap: true,
+          type: 'pie', radius: ['46%', '70%'], center: ['38%', '52%'], avoidLabelOverlap: true, minShowLabelAngle: 8,
           itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
-          label: { show: false }, labelLine: { show: false },
+          label: { show: true, position: 'outside', formatter: (p) => p.percent + '%', fontSize: 11, color: '#555' },
+          labelLine: { show: true, length: 6, length2: 8 },
+          labelLayout: { hideOverlap: true },
           emphasis: { scale: true, scaleSize: 6 },
           data,
         }],
       });
       if (opts.onClick) { c.getZr().setCursorStyle('pointer'); c.on('click', (p) => { if (p.name) opts.onClick(p.name); }); }
+    }
+
+    // ===== 横向占比柱状图（支持单周或两周对比，显示占比%，可点击下钻） =====
+    function shareBarChart(c, weeksArr, opts) {
+      opts = opts || {};
+      const keySet = new Set();
+      weeksArr.forEach(w => w.summary.hitMap.forEach((v, k) => keySet.add(k)));
+      const last = weeksArr[weeksArr.length - 1];
+      let keys = [...keySet].sort((a, b) => (last.summary.hitMap.get(b) || 0) - (last.summary.hitMap.get(a) || 0));
+      if (!keys.length) { c.setOption({ title: { text: '无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 13 } } }); return; }
+      if (opts.maxItems) keys = keys.slice(0, opts.maxItems);
+      const multi = weeksArr.length > 1;
+      const share = (w, k) => { const tot = w.summary.meta.totalHits || 0; return tot ? +((w.summary.hitMap.get(k) || 0) / tot * 100).toFixed(2) : 0; };
+      const cats = keys.map(k => shortLabel(k, 18));
+      c.setOption({
+        tooltip: {
+          trigger: 'axis', axisPointer: { type: 'shadow' }, confine: true,
+          formatter: (ps) => {
+            const i = ps[0].dataIndex;
+            return `<b>${escapeHtml(keys[i])}</b><br/>` + ps.map(p => `${p.marker}${escapeHtml(p.seriesName)}：<b>${p.value}%</b>（命中 ${weeksArr[p.seriesIndex].summary.hitMap.get(keys[i]) || 0}）`).join('<br/>');
+          },
+        },
+        legend: multi ? { top: 0, data: weeksArr.map(w => w.label) } : undefined,
+        grid: { left: 190, right: 56, top: multi ? 30 : 10, bottom: 24 },
+        xAxis: { type: 'value', axisLabel: { color: '#666', formatter: (v) => v + '%' }, splitLine: { lineStyle: { color: '#eef1f5' } } },
+        yAxis: { type: 'category', inverse: true, data: cats, axisLabel: { color: '#444', fontSize: 11 } },
+        color: opts.colors || LINE_COLORS,
+        series: weeksArr.map((w) => ({
+          name: w.label, type: 'bar', barMaxWidth: multi ? 11 : 16, barGap: '20%',
+          data: keys.map(k => share(w, k)),
+          label: { show: true, position: 'right', formatter: (p) => p.value + '%', color: '#444', fontSize: multi ? 10 : 11 },
+          labelLayout: { hideOverlap: true },
+          itemStyle: multi ? undefined : { color: opts.color || '#5B8FF9', borderRadius: [0, 3, 3, 0] },
+        })),
+      });
+      if (opts.onClick) { c.getZr().setCursorStyle('pointer'); c.on('click', (p) => { const k = keys[p.dataIndex]; if (k != null) opts.onClick(k); }); }
     }
 
     // ===== 层级分组标题 =====
@@ -866,7 +920,6 @@
     }
     insightBtn.addEventListener('click', runInsight);
 
-    topSel.addEventListener('change', paint);
     paint();
 
     if (!render._resizeBound) {

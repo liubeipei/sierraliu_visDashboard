@@ -349,6 +349,15 @@
     .tvd-row-click { cursor: pointer; }
     .tvd-clickable canvas { cursor: pointer; }
 
+    /* ==== 外露分段切换控件 ==== */
+    .tvd-ctrl-group { display: inline-flex; align-items: center; gap: 8px; }
+    .tvd-ctrl-label { font-size: 12px; color: var(--muted); font-weight: 500; }
+    .tvd-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; }
+    .tvd-seg-btn { border: none; background: #fff; padding: 6px 14px; font-size: 13px; color: var(--muted); cursor: pointer; border-right: 1px solid var(--border); transition: background .12s, color .12s; }
+    .tvd-seg-btn:last-child { border-right: none; }
+    .tvd-seg-btn:hover { background: #f0f4fb; color: var(--text); }
+    .tvd-seg-btn.active { background: var(--primary); color: #fff; font-weight: 600; }
+
     /* ==== Case 卡片 / 弹窗 ==== */
     .tvd-case-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
     .tvd-case-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
@@ -405,6 +414,10 @@
     .tvd-turn-no { font-size: 10px; color: var(--muted); margin-right: 8px; }
     .tvd-reasoning { background: #fff; padding: 8px 10px; border-radius: 4px; font-size: 12px; }
     .tvd-empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .weekly-empty { text-align: center; padding: 72px 24px; color: var(--muted); }
+    .weekly-empty-icon { font-size: 56px; line-height: 1; opacity: .55; filter: grayscale(1); margin-bottom: 14px; }
+    .weekly-empty-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .weekly-empty-desc { font-size: 13px; max-width: 460px; margin: 0 auto; line-height: 1.6; }
 
     /* ==== Report (trw-*) ==== */
     .trw-root { padding: 0; }
@@ -552,10 +565,15 @@
 
     <div class="sb-section">周追踪</div>
     <nav class="sb-nav" aria-label="主导航">
-      <div class="sb-item active" data-route="weekly" role="button" tabindex="0" aria-label="打开周追踪看板">
-        <span class="sb-icon">📅</span>
-        <span class="sb-label">周追踪看板</span>
-        <span class="sb-badge" id="badge-weekly" style="display:none">0</span>
+      <div class="sb-item active" data-route="weekly-i2i" role="button" tabindex="0" aria-label="打开图生图周追踪">
+        <span class="sb-icon">🖼️</span>
+        <span class="sb-label">图生图周追踪</span>
+        <span class="sb-badge" id="badge-weekly-i2i" style="display:none">0</span>
+      </div>
+      <div class="sb-item" data-route="weekly-t2i" role="button" tabindex="0" aria-label="打开文生图周追踪">
+        <span class="sb-icon">📝</span>
+        <span class="sb-label">文生图周追踪</span>
+        <span class="sb-badge" id="badge-weekly-t2i" style="display:none">0</span>
       </div>
 
       <div class="sb-section">主面板</div>
@@ -649,18 +667,24 @@ window.addEventListener('DOMContentLoaded', function () {
     parsed: { t2i: null, i2i: null },
     projectName: { t2i: '', i2i: '' }, // 用户起的项目名
     reports: [],
-    activeRoute: 'weekly',
+    activeRoute: 'weekly-i2i',
     activeReportId: null,
     sidebarCollapsed: false,
+    // 周追踪按数据类型分别存储（i2i 图生图 / t2i 文生图）
     weekly: {
-      weeks: [],            // [{ id, label, weekStart, weekEnd, parsed }]
-      taxonomy: null,       // { ability:{items}, scene:{items} }
       dimension: 'ability',
       granularity: 'full',
-      loaded: false,
-      loading: false,
+      data: {
+        i2i: { weeks: [], taxonomy: null, loaded: false, loading: false },
+        t2i: { weeks: [], taxonomy: null, loaded: false, loading: false },
+      },
     },
   };
+  const WEEKLY_TYPE_META = {
+    i2i: { label: '图生图周追踪', icon: '🖼️', manifest: 'dataset/i2i/manifest.json', dataType: 'i2i' },
+    t2i: { label: '文生图周追踪', icon: '📝', manifest: 'dataset/t2i/manifest.json', dataType: 't2i' },
+  };
+  const weeklyTypeOf = (route) => route === 'weekly-t2i' ? 't2i' : 'i2i';
 
   function loadPersistedState() {
     try {
@@ -858,7 +882,8 @@ window.addEventListener('DOMContentLoaded', function () {
     };
     set('badge-t2i', state.parsed.t2i ? state.parsed.t2i.rows.length : 0);
     set('badge-i2i', state.parsed.i2i ? state.parsed.i2i.rows.length : 0);
-    set('badge-weekly', state.weekly.weeks.length);
+    set('badge-weekly-i2i', state.weekly.data.i2i.weeks.length);
+    set('badge-weekly-t2i', state.weekly.data.t2i.weeks.length);
     set('badge-reports', state.reports.length);
   }
 
@@ -868,7 +893,7 @@ window.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.sb-item').forEach(it => {
       it.classList.toggle('active', it.dataset.route === route);
     });
-    const titleMap = { t2i: '文生图', i2i: '图生图', weekly: '周追踪看板', reports: '分析报告', settings: 'LLM 配置', about: '使用说明' };
+    const titleMap = { t2i: '文生图', i2i: '图生图', 'weekly-i2i': '图生图周追踪', 'weekly-t2i': '文生图周追踪', reports: '分析报告', settings: 'LLM 配置', about: '使用说明' };
     document.getElementById('mhTitle').textContent = titleMap[route] || route;
     renderRoute(route);
   }
@@ -876,7 +901,7 @@ window.addEventListener('DOMContentLoaded', function () {
     const main = document.getElementById('mainContent');
     main.innerHTML = '';
     if (route === 't2i' || route === 'i2i') renderDataPanel(main, route);
-    else if (route === 'weekly') renderWeeklyPanel(main);
+    else if (route === 'weekly-i2i' || route === 'weekly-t2i') renderWeeklyPanel(main, weeklyTypeOf(route));
     else if (route === 'reports') renderReportsPanel(main);
     else if (route === 'settings') renderSettingsPanel(main);
     else if (route === 'about') renderAboutPanel(main);
@@ -894,17 +919,16 @@ window.addEventListener('DOMContentLoaded', function () {
         const at = p.meta && p.meta.generated_at ? new Date(p.meta.generated_at).toLocaleString() : '历史数据';
         m.textContent = `${name ? name + ' · ' : ''}${p.rows.length} 条 · ${at}`;
       }
-    } else if (r === 'weekly') {
-      const n = state.weekly.weeks.length;
-      m.textContent = n ? `${n} 周数据 · ${state.weekly.weeks[0].label} → ${state.weekly.weeks[n - 1].label}` : '尚未加载周数据';
+    } else if (r === 'weekly-i2i' || r === 'weekly-t2i') {
+      const wk = state.weekly.data[weeklyTypeOf(r)];
+      const n = wk.weeks.length;
+      m.textContent = n ? `${n} 周数据 · ${wk.weeks[0].label} → ${wk.weeks[n - 1].label}` : '暂无数据';
     } else if (r === 'reports') {
       m.textContent = `${state.reports.length} 份报告`;
     } else m.textContent = '';
   }
 
-  // ==== Weekly tracking panel ====
-  const WEEKLY_MANIFEST = 'dataset/manifest.json';
-
+  // ==== Weekly tracking panel（按 i2i / t2i 分别加载与渲染）====
   async function fetchJson(path) {
     const resp = await fetch(path, { cache: 'no-cache' });
     if (!resp.ok) throw new Error('HTTP ' + resp.status + ' @ ' + path);
@@ -920,20 +944,21 @@ window.addEventListener('DOMContentLoaded', function () {
     return window.TaggingDataAdapter.parse(rawRows, opts);
   }
 
-  async function loadWeeklyData() {
-    if (state.weekly.loaded || state.weekly.loading) return;
-    state.weekly.loading = true;
+  async function loadWeeklyData(type) {
+    const wk = state.weekly.data[type];
+    if (wk.loaded || wk.loading) return;
+    wk.loading = true;
     try {
-      const manifest = await fetchJson(WEEKLY_MANIFEST);
+      const manifest = await fetchJson(WEEKLY_TYPE_META[type].manifest);
       const tax = { ability: null, scene: null };
       if (manifest.taxonomy) {
         if (manifest.taxonomy.ability) tax.ability = await fetchJson(manifest.taxonomy.ability);
         if (manifest.taxonomy.scene) tax.scene = await fetchJson(manifest.taxonomy.scene);
       }
-      state.weekly.taxonomy = tax;
+      wk.taxonomy = tax;
 
       const baseOpts = {
-        dataType: manifest.dataType || 'i2i',
+        dataType: manifest.dataType || type,
         imageMode: manifest.imageMode || 'single',
         turnMode: manifest.turnMode || 'single',
       };
@@ -947,19 +972,20 @@ window.addEventListener('DOMContentLoaded', function () {
         }
       }
       weeks.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
-      state.weekly.weeks = weeks;
-      state.weekly.loaded = true;
+      wk.weeks = weeks;
+      wk.loaded = true;
       updateBadges();
     } finally {
-      state.weekly.loading = false;
+      wk.loading = false;
     }
   }
 
-  function paintWeekly(container) {
+  function paintWeekly(container, type) {
+    const wk = state.weekly.data[type];
     const mount = container.querySelector('#weeklyMount') || container;
     window.TaggingWeeklyDashboard.render(mount, {
-      weeks: state.weekly.weeks,
-      taxonomy: state.weekly.taxonomy,
+      weeks: wk.weeks,
+      taxonomy: wk.taxonomy,
       dimension: state.weekly.dimension,
       granularity: state.weekly.granularity,
       onConfigChange: (c) => {
@@ -971,10 +997,21 @@ window.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  function renderWeeklyPanel(container) {
+  function weeklyEmptyState(label) {
+    return `
+      <div class="weekly-empty">
+        <div class="weekly-empty-icon">🗂️</div>
+        <div class="weekly-empty-title">${escapeHtml(label)} · 暂无数据</div>
+        <div class="weekly-empty-desc">尚未接入该类型的周数据。把 xlsx 放入对应 dataset 子目录并登记 manifest，或点「上传本周数据」临时查看。</div>
+      </div>`;
+  }
+
+  function renderWeeklyPanel(container, type) {
+    const meta = WEEKLY_TYPE_META[type];
+    const wk = state.weekly.data[type];
     container.innerHTML = `
       <div class="tvd-banner">
-        <span class="tvd-pill tvd-pill-info">周聚合 · WoW 追踪</span>
+        <span class="tvd-pill tvd-pill-info">${escapeHtml(meta.icon + ' ' + meta.label)} · WoW 追踪</span>
         <span class="tvd-meta" id="weeklyMeta">加载中…</span>
         <span class="tvd-banner-actions">
           <button class="tvd-banner-btn" id="weeklyReload">🔄 重新加载</button>
@@ -985,37 +1022,40 @@ window.addEventListener('DOMContentLoaded', function () {
     `;
     const mount = container.querySelector('#weeklyMount');
     const metaEl = container.querySelector('#weeklyMeta');
+    const route = type === 't2i' ? 'weekly-t2i' : 'weekly-i2i';
 
     container.querySelector('#weeklyReload').addEventListener('click', () => {
-      state.weekly.loaded = false;
-      state.weekly.weeks = [];
-      renderWeeklyPanel(container);
+      wk.loaded = false;
+      wk.weeks = [];
+      renderWeeklyPanel(container, type);
     });
-    container.querySelector('#weeklyUpload').addEventListener('click', () => openWeeklyUpload(container));
+    container.querySelector('#weeklyUpload').addEventListener('click', () => openWeeklyUpload(container, type));
 
-    if (state.weekly.loaded) {
-      metaEl.textContent = `${state.weekly.weeks.length} 周`;
-      paintWeekly(container);
+    const showEmpty = () => { metaEl.textContent = '暂无数据'; mount.innerHTML = weeklyEmptyState(meta.label); };
+
+    if (wk.loaded) {
+      if (!wk.weeks.length) { showEmpty(); updateMetaBar(); return; }
+      metaEl.textContent = `${wk.weeks.length} 周`;
+      paintWeekly(container, type);
       updateMetaBar();
       return;
     }
 
     mount.innerHTML = '<div class="tvd-empty">⏳ 正在从 dataset 加载历史周并解析…</div>';
-    loadWeeklyData().then(() => {
-      if (state.activeRoute !== 'weekly') return;
-      if (!state.weekly.weeks.length) {
-        mount.innerHTML = '<div class="tvd-empty">未能加载到周数据，请检查 dataset/manifest.json，或点「上传本周数据」</div>';
-        return;
-      }
-      metaEl.textContent = `${state.weekly.weeks.length} 周`;
-      paintWeekly(container);
+    loadWeeklyData(type).then(() => {
+      if (state.activeRoute !== route) return;
+      if (!wk.weeks.length) { showEmpty(); updateMetaBar(); return; }
+      metaEl.textContent = `${wk.weeks.length} 周`;
+      paintWeekly(container, type);
       updateMetaBar();
     }).catch(e => {
+      // manifest 缺失或为空也按"暂无数据"处理
+      if (!wk.weeks.length) { showEmpty(); updateMetaBar(); return; }
       mount.innerHTML = `<div class="tvd-empty">加载失败：${escapeHtml(e.message)}<br/><span style="font-size:11px;">提示：需通过 http(s) 访问（如本地 node server.js 或 GitHub Pages），不能直接用 file:// 打开</span></div>`;
     });
   }
 
-  function openWeeklyUpload(container) {
+  function openWeeklyUpload(container, type) {
     const wrap = document.createElement('div');
     wrap.innerHTML = `
       <div class="llm-cfg-row">
@@ -1030,10 +1070,11 @@ window.addEventListener('DOMContentLoaded', function () {
         <input type="file" accept=".xlsx,.xls,.csv" />
         <div class="drop-zone-icon">📤</div>
         <div class="drop-zone-title">点击选择本周 xlsx</div>
-        <div class="drop-zone-desc">将按当前数据类型解析并追加到周序列</div>
+        <div class="drop-zone-desc">将按「${escapeHtml(WEEKLY_TYPE_META[type].label)}」解析并追加到周序列</div>
       </label>
     `;
-    openModal('➕ 上传本周数据', wrap);
+    openModal('➕ 上传本周数据 · ' + WEEKLY_TYPE_META[type].label, wrap);
+    const wk = state.weekly.data[type];
     const input = wrap.querySelector('input[type=file]');
     input.addEventListener('change', async e => {
       const file = e.target.files[0];
@@ -1044,14 +1085,14 @@ window.addEventListener('DOMContentLoaded', function () {
         const buf = await file.arrayBuffer();
         const wb = XLSX.read(buf, { type: 'array' });
         const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-        const parsed = window.TaggingDataAdapter.parse(rawRows, { dataType: 'i2i', imageMode: 'single', turnMode: 'single' });
-        state.weekly.weeks.push({ id: 'wk-' + Date.now(), label, weekStart, weekEnd: '', parsed });
-        state.weekly.weeks.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
-        state.weekly.loaded = true;
+        const parsed = window.TaggingDataAdapter.parse(rawRows, { dataType: type, imageMode: 'single', turnMode: 'single' });
+        wk.weeks.push({ id: 'wk-' + Date.now(), label, weekStart, weekEnd: '', parsed });
+        wk.weeks.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
+        wk.loaded = true;
         updateBadges();
         closeModal();
         toast(`✅ 已追加 ${label} · ${parsed.rows.length} 条`);
-        renderWeeklyPanel(container);
+        renderWeeklyPanel(container, type);
       } catch (err) {
         toast('❌ 解析失败：' + err.message, 4000);
       }
@@ -1745,7 +1786,7 @@ window.addEventListener('DOMContentLoaded', function () {
   async function bootstrap() {
     const loadedFromServer = await loadServerState();
     const loadedFromLocal = loadedFromServer ? false : loadLocalDataState();
-    navigate('weekly');
+    navigate('weekly-i2i');
     updateBadges();
     if (loadedFromServer) {
       toast('✅ 已从云端恢复历史数据');
