@@ -10,6 +10,7 @@
 
   const AGG = () => window.TaggingWeeklyAggregator;
   const charts = [];
+  const observers = [];
 
   function el(tag, cls, html) {
     const e = document.createElement(tag);
@@ -26,6 +27,7 @@
   function shortLabel(v, n) { v = String(v); return v.length > n ? v.slice(0, n - 1) + '…' : v; }
 
   function disposeAll() {
+    while (observers.length) { try { observers.pop().disconnect(); } catch (e) { /* noop */ } }
     while (charts.length) {
       const c = charts.pop();
       try { c.dispose(); } catch (e) { /* noop */ }
@@ -37,6 +39,16 @@
     parent.appendChild(box);
     const c = echarts.init(box);
     charts.push(c);
+    // 监听容器尺寸变化（网格列数变化 / 侧栏收起 / 窗口缩放）自动重绘，避免图表错位、溢出到相邻图
+    if (typeof ResizeObserver !== 'undefined') {
+      let raf = 0;
+      const ro = new ResizeObserver(() => {
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => { try { c.resize(); } catch (e) { /* noop */ } });
+      });
+      ro.observe(box);
+      observers.push(ro);
+    }
     return c;
   }
   const LINE_COLORS = ['#5B8FF9', '#5AD8A6', '#F6BD16', '#E8684A', '#6DC8EC', '#9270CA', '#FF9D4D', '#269A99', '#FF99C3', '#5D7092'];
@@ -312,10 +324,10 @@
       ], { percent: true, yName: '比率' });
 
       if (series.previous) {
-        const secRadar = section(body, `🕸️ 一级类目结构雷达（${cmpLabel}）`);
+        const secRadar = section(body, `🕸️ 二级类目结构雷达（${cmpLabel} · Top 8 占比）`);
         const radarWeeks = [baseWeek, curWeek].filter(Boolean);
-        const l1Weeks = radarWeeks.map(w => ({ label: w.label, summary: AGG().summarizeWeek(w.parsed, { dimension: dimSel.value, granularity: 'l1', taxonomy }) }));
-        radarChart(mkChart(secRadar, 360), l1Weeks, dimLabel);
+        const l2Weeks = radarWeeks.map(w => ({ label: w.label, summary: AGG().summarizeWeek(w.parsed, { dimension: dimSel.value, granularity: 'l2', taxonomy }) }));
+        radarChart(mkChart(secRadar, 380), l2Weeks, dimLabel, 8);
       }
 
       // ============ 层级 3 · 排名与变动 ============
@@ -576,30 +588,37 @@
       });
     }
 
-    function radarChart(c, l1Weeks, dimLabel) {
-      // 指标 = 各周 L1 命中并集（按最新周占比降序）
+    function radarChart(c, weeksArr, dimLabel, maxAxes) {
+      maxAxes = maxAxes || 8;
+      // 指标 = 各周命中并集（按最新周命中量降序，取 Top maxAxes）
       const keySet = new Set();
-      l1Weeks.forEach(w => w.summary.hitMap.forEach((v, k) => keySet.add(k)));
-      const last = l1Weeks[l1Weeks.length - 1];
-      const keys = [...keySet].sort((a, b) => (last.summary.hitMap.get(b) || 0) - (last.summary.hitMap.get(a) || 0));
-      if (!keys.length) { c.setOption({ title: { text: '无可用 L1 数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 13 } } }); return; }
+      weeksArr.forEach(w => w.summary.hitMap.forEach((v, k) => keySet.add(k)));
+      const last = weeksArr[weeksArr.length - 1];
+      let keys = [...keySet].sort((a, b) => (last.summary.hitMap.get(b) || 0) - (last.summary.hitMap.get(a) || 0));
+      if (!keys.length) { c.setOption({ title: { text: '无可用数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 13 } } }); return; }
+      keys = keys.slice(0, maxAxes);
       const share = (w, k) => {
         const tot = w.summary.meta.totalHits || 0;
         return tot ? +((w.summary.hitMap.get(k) || 0) / tot * 100).toFixed(2) : 0;
       };
       let mx = 0;
-      l1Weeks.forEach(w => keys.forEach(k => { const v = share(w, k); if (v > mx) mx = v; }));
-      const indicator = keys.map(k => ({ name: shortLabel(k, 8), max: Math.ceil(mx / 10) * 10 || 100 }));
+      weeksArr.forEach(w => keys.forEach(k => { const v = share(w, k); if (v > mx) mx = v; }));
+      // 指标名取末级（去掉父级前缀）更易读，完整名见 tooltip
+      const shortName = (k) => { const parts = String(k).split('-'); return shortLabel(parts[parts.length - 1] || k, 10); };
+      const indicator = keys.map(k => ({ name: shortName(k), max: Math.ceil(mx / 10) * 10 || 100 }));
       c.setOption({
-        tooltip: { trigger: 'item', confine: true },
-        legend: { type: 'scroll', top: 0, data: l1Weeks.map(w => w.label) },
-        radar: { indicator, radius: '62%', center: ['50%', '56%'], axisName: { color: '#444', fontSize: 11 } },
+        tooltip: {
+          trigger: 'item', confine: true,
+          formatter: (p) => `<b>${escapeHtml(p.name)}</b><br/>` + keys.map((k, i) => `${escapeHtml(k)}：${p.value[i]}%`).join('<br/>'),
+        },
+        legend: { type: 'scroll', top: 0, data: weeksArr.map(w => w.label) },
+        radar: { indicator, radius: '60%', center: ['50%', '58%'], axisName: { color: '#444', fontSize: 11 }, splitNumber: 4 },
         series: [{
           type: 'radar', symbolSize: 5,
-          data: l1Weeks.map((w, i) => ({
+          data: weeksArr.map((w, i) => ({
             name: w.label,
             value: keys.map(k => share(w, k)),
-            areaStyle: { opacity: i === l1Weeks.length - 1 ? 0.18 : 0.06 },
+            areaStyle: { opacity: i === weeksArr.length - 1 ? 0.18 : 0.06 },
             lineStyle: { color: LINE_COLORS[i % LINE_COLORS.length], width: 2 },
             itemStyle: { color: LINE_COLORS[i % LINE_COLORS.length] },
           })),
@@ -654,7 +673,7 @@
         tooltip: { trigger: 'item', confine: true, formatter: (p) => `${escapeHtml(p.name)}<br/><b>${p.value}</b>（${p.percent}%）` },
         legend: { type: 'scroll', orient: 'vertical', right: 4, top: 'middle', icon: 'circle', textStyle: { fontSize: 11, color: '#555' }, formatter: (n) => shortLabel(n, 11) },
         color: opts.colors || LINE_COLORS,
-        graphic: opts.centerLabel ? [{ type: 'text', left: '37%', top: '46%', style: { text: opts.centerLabel + '\n' + total, textAlign: 'center', fill: '#333', fontSize: 13, fontWeight: 'bold' } }] : undefined,
+        graphic: opts.centerLabel ? [{ type: 'text', left: '38%', top: '52%', z: 10, style: { text: opts.centerLabel + '\n' + total, textAlign: 'center', textVerticalAlign: 'middle', fill: '#333', fontSize: 13, fontWeight: 'bold' } }] : undefined,
         series: [{
           type: 'pie', radius: ['46%', '70%'], center: ['38%', '52%'], avoidLabelOverlap: true,
           itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
@@ -706,7 +725,7 @@
 
     function caseCard(r) {
       const defs = AGG().DEFAULT_DEFS; const raw = r._raw || {};
-      const imgs = (r.output_image_urls && r.output_image_urls.length ? r.output_image_urls : r.input_image_urls) || [];
+      const imgs = (r.input_image_urls && r.input_image_urls.length) ? r.input_image_urls : [];
       const thumb = imgs[0];
       const badges = [];
       if (defs.isBadcase(raw)) badges.push('<span class="tvd-case-flag danger">Badcase</span>');
@@ -751,10 +770,9 @@
       if (Number(raw.unlike_cnt) > 0) beh.push('点踩×' + raw.unlike_cnt);
       rows.push(`<div class="tvd-case-detail-row"><b>用户行为：</b>${beh.length ? escapeHtml(beh.join('，')) : '无'}</div>`);
       if (r.reasoning) rows.push(`<div class="tvd-case-detail-row"><b>打标理由：</b>${escapeHtml(shortLabel(r.reasoning, 300))}</div>`);
-      const ins = (r.input_image_urls || []), outs = (r.output_image_urls || []);
+      const ins = (r.input_image_urls || []);
       let imgHtml = '';
       if (ins.length) imgHtml += `<div class="tvd-case-detail-row"><b>输入图：</b></div><div class="tvd-case-detail-imgs">${ins.map(u => `<img class="tvd-thumb" src="${escapeHtml(u)}" referrerpolicy="no-referrer" />`).join('')}</div>`;
-      if (outs.length) imgHtml += `<div class="tvd-case-detail-row"><b>输出图：</b></div><div class="tvd-case-detail-imgs">${outs.map(u => `<img class="tvd-thumb" src="${escapeHtml(u)}" referrerpolicy="no-referrer" />`).join('')}</div>`;
       return rows.join('') + imgHtml;
     }
 
