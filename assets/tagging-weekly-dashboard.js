@@ -277,82 +277,115 @@
       const baseLab = series.previous ? series.previous.label : '—';
       const cmpLabel = series.previous ? `${baseLab} → ${curLab}` : `${curLab}（无对比周）`;
 
+      const dimLabel = (AGG().DIMENSIONS.find(d => d.key === dimSel.value) || {}).label || '考点';
+      const curWeek = weeks[currentIndex];
+      const baseWeek = weeks[prevIndex];
+      const hint = (sec, txt) => { const t = sec.querySelector('.tvd-section-title'); if (t) t.insertAdjacentHTML('beforeend', `<span class="tvd-hint">${txt}</span>`); };
+
+      // ============ 层级 1 · 概览 ============
+      layer(body, '1', '概览 · Overview', `${curLab} 关键指标与一键洞察`);
       renderKpis(body, series);
       insightMount = el('div');
       body.appendChild(insightMount);
 
-      // ===== 1. 覆盖率 & 集中度 =====
-      const sec1 = section(body, '📈 考点覆盖率 & 集中度（by 周）');
-      const g1 = el('div', 'tvd-grid-2'); sec1.appendChild(g1);
-      const b1a = el('div', 'tvd-chart-block'); b1a.appendChild(el('div', 'tvd-chart-title', '考点覆盖率')); g1.appendChild(b1a);
-      lineChart(mkChart(b1a, 280), series.labels, [{ name: '覆盖率', data: series.trends.coverageRate }], { percent: true, yName: '覆盖率', showLabel: true });
-      const b1b = el('div', 'tvd-chart-block'); b1b.appendChild(el('div', 'tvd-chart-title', '集中度 CR5 / CR10')); g1.appendChild(b1b);
-      lineChart(mkChart(b1b, 280), series.labels, [
+      // ============ 层级 2 · 结构与分布 ============
+      layer(body, '2', '结构与分布 · Structure', `${dimLabel}的类目构成、覆盖广度与集中度`);
+      const l1Cur = AGG().summarizeWeek(curWeek.parsed, { dimension: dimSel.value, granularity: 'l1', taxonomy });
+
+      const secStruct = section(body, `🍩 ${dimLabel}一级类目占比 & 覆盖 / 集中度`);
+      hint(secStruct, '🔍 点击扇区查看 case');
+      const gS = el('div', 'tvd-grid-2'); secStruct.appendChild(gS);
+      const donutBlock = el('div', 'tvd-chart-block tvd-clickable');
+      donutBlock.appendChild(el('div', 'tvd-chart-title', `${curLab} · 一级类目占比`));
+      gS.appendChild(donutBlock);
+      donutChart(mkChart(donutBlock, 300), [...l1Cur.hitMap.entries()].sort((a, b) => b[1] - a[1]), {
+        centerLabel: 'L1',
+        onClick: (name) => openCases(`${name} · ${curLab} 全部 case`, casesFor(curWeek, name, { granularity: 'l1' }), `一级类目「${name}」`),
+      });
+      const covBlock = el('div', 'tvd-chart-block');
+      covBlock.appendChild(el('div', 'tvd-chart-title', '覆盖率 & 集中度 CR5/CR10（全部周趋势）'));
+      gS.appendChild(covBlock);
+      lineChart(mkChart(covBlock, 300), series.labels, [
+        { name: '覆盖率', data: series.trends.coverageRate },
         { name: 'CR5', data: series.trends.cr5 },
         { name: 'CR10', data: series.trends.cr10 },
-      ], { percent: true, yName: '占比' });
+      ], { percent: true, yName: '比率' });
 
-      // ===== 周增 / 周减考点 =====
-      const sec2 = section(body, `🔼 周增 / 🔽 周减考点（${cmpLabel}）`);
-      const g2 = el('div', 'tvd-grid-2'); sec2.appendChild(g2);
-      const addBlock = el('div', 'tvd-list-block');
-      addBlock.appendChild(el('div', 'tvd-list-title', `周增考点 · ${series.added.length} 项`));
-      if (series.added.length) {
-        addBlock.appendChild(table(series.added.slice(0, 30).map(([k, c]) => [escapeHtml(k), `<b style="color:var(--ok)">+${c}</b>`]), ['考点', '本周命中量']));
-      } else addBlock.appendChild(el('div', 'tvd-empty', '无新增考点'));
-      g2.appendChild(addBlock);
-      const rmBlock = el('div', 'tvd-list-block');
-      rmBlock.appendChild(el('div', 'tvd-list-title', `周减考点 · ${series.removed.length} 项`));
-      if (series.removed.length) {
-        rmBlock.appendChild(table(series.removed.slice(0, 30).map(([k, c]) => [escapeHtml(k), `<span style="color:var(--muted)">上周 ${c}</span>`]), ['考点', '上周命中量']));
-      } else rmBlock.appendChild(el('div', 'tvd-empty', '无消失考点'));
-      g2.appendChild(rmBlock);
+      if (series.previous) {
+        const secRadar = section(body, `🕸️ 一级类目结构雷达（${cmpLabel}）`);
+        const radarWeeks = [baseWeek, curWeek].filter(Boolean);
+        const l1Weeks = radarWeeks.map(w => ({ label: w.label, summary: AGG().summarizeWeek(w.parsed, { dimension: dimSel.value, granularity: 'l1', taxonomy }) }));
+        radarChart(mkChart(secRadar, 360), l1Weeks, dimLabel);
+      }
 
-      // ===== Top N 排名表 + 升降 =====
-      const sec3 = section(body, `🏆 Top ${topN} 考点排名（${cmpLabel} 位移）`);
-      const rankRows = series.rankRows.map(r => {
+      // ============ 层级 3 · 排名与变动 ============
+      layer(body, '3', '排名与变动 · Ranking', `Top ${topN} ${dimLabel}排名、环比位移与周增减`);
+
+      const sec3 = section(body, `🏆 Top ${topN} ${dimLabel}排名（${cmpLabel} 位移）`);
+      hint(sec3, '🔍 点击行查看 case');
+      const rankTbl = table(series.rankRows.map(r => {
         let mark = '<span style="color:var(--muted)">—</span>';
         if (r.status === 'new') mark = '<span style="color:var(--primary)">NEW</span>';
         else if (r.status === 'up') mark = `<span style="color:var(--ok)">▲ ${r.delta}</span>`;
         else if (r.status === 'down') mark = `<span style="color:var(--danger)">▼ ${Math.abs(r.delta)}</span>`;
         return [r.cur || '—', escapeHtml(r.kp), r.hit, r.old || '—', mark];
-      });
-      sec3.appendChild(table(rankRows, ['本周排名', '考点', '命中量', '上周排名', '变动']));
+      }), ['本周排名', dimLabel, '命中量', '上周排名', '变动']);
+      sec3.appendChild(rankTbl);
+      attachRowClicks(rankTbl, series.rankRows.map(r => r.kp), (kp) => openCases(`${kp} · ${curLab} 全部 case`, casesFor(curWeek, kp), `${dimLabel}「${kp}」`));
 
-      // ===== Top 排名变动（哑铃图）+ 结构雷达（并排）=====
       if (series.previous) {
-        const sec3b = section(body, `📊 考点排名变化（${cmpLabel}）& 🕸️ L1 结构雷达`);
-        const g3 = el('div', 'tvd-grid-2'); sec3b.appendChild(g3);
-
-        const slopeBlock = el('div', 'tvd-chart-block');
-        slopeBlock.style.overflow = 'hidden';
-        slopeBlock.appendChild(el('div', 'tvd-chart-title', '排名变化（哑铃图：●上周 ●本周，越左排名越高）'));
-        g3.appendChild(slopeBlock);
-        const h = Math.max(360, series.rankRows.length * 34);
-        rankChangeChart(mkChart(slopeBlock, h), series.rankRows);
-
-        const radarBlock = el('div', 'tvd-chart-block');
-        radarBlock.appendChild(el('div', 'tvd-chart-title', '一级类目占比结构（周对比）'));
-        g3.appendChild(radarBlock);
-        const dimLabel = (AGG().DIMENSIONS.find(d => d.key === dimSel.value) || {}).label || '';
-        const radarWeeks = [weeks[prevIndex], weeks[currentIndex]].filter(Boolean);
-        const l1Weeks = radarWeeks.map(w => ({
-          label: w.label,
-          summary: AGG().summarizeWeek(w.parsed, { dimension: dimSel.value, granularity: 'l1', taxonomy }),
-        }));
-        radarChart(mkChart(radarBlock, h), l1Weeks, dimLabel);
+        const sec3b = section(body, `📊 ${dimLabel}排名变化哑铃图（${cmpLabel}）`);
+        sec3b.appendChild(el('div', 'tvd-chart-title', '●上周 → ●本周，越靠左排名越高；绿色上升 / 红色下降'));
+        rankChangeChart(mkChart(sec3b, Math.max(360, series.rankRows.length * 34)), series.rankRows);
       }
 
-      // ===== 整体行为趋势 =====
-      const sec4 = section(body, '👍 整体用户行为（保存 / 点赞 / 点踩 率 · by 周）');
-      lineChart(mkChart(sec4, 300), series.labels, [
+      if (series.previous) {
+        const sec2 = section(body, `🔼 周增 / 🔽 周减${dimLabel}（${cmpLabel}）`);
+        hint(sec2, '🔍 点击行查看 case');
+        const g2 = el('div', 'tvd-grid-2'); sec2.appendChild(g2);
+        const addBlock = el('div', 'tvd-list-block');
+        addBlock.appendChild(el('div', 'tvd-list-title', `周增${dimLabel} · ${series.added.length} 项`));
+        if (series.added.length) {
+          const t = table(series.added.slice(0, 30).map(([k, c]) => [escapeHtml(k), `<b style="color:var(--ok)">+${c}</b>`]), [dimLabel, '本周命中量']);
+          addBlock.appendChild(t);
+          attachRowClicks(t, series.added.slice(0, 30).map(p => p[0]), (kp) => openCases(`${kp} · ${curLab} case`, casesFor(curWeek, kp), `本周新增「${kp}」`));
+        } else addBlock.appendChild(el('div', 'tvd-empty', '无新增'));
+        g2.appendChild(addBlock);
+        const rmBlock = el('div', 'tvd-list-block');
+        rmBlock.appendChild(el('div', 'tvd-list-title', `周减${dimLabel} · ${series.removed.length} 项`));
+        if (series.removed.length) {
+          const t = table(series.removed.slice(0, 30).map(([k, c]) => [escapeHtml(k), `<span style="color:var(--muted)">上周 ${c}</span>`]), [dimLabel, '上周命中量']);
+          rmBlock.appendChild(t);
+          attachRowClicks(t, series.removed.slice(0, 30).map(p => p[0]), (kp) => openCases(`${kp} · ${baseLab} case`, casesFor(baseWeek, kp), `上周「${kp}」（本周消失）`));
+        } else rmBlock.appendChild(el('div', 'tvd-empty', '无消失'));
+        g2.appendChild(rmBlock);
+      }
+
+      // ============ 层级 4 · 用户行为 ============
+      layer(body, '4', '用户行为 · Behavior', '整体保存/点赞/点踩趋势、Top 考点行为热力与异动');
+
+      const sec4 = section(body, '👍 用户行为构成 & 趋势');
+      hint(sec4, '🔍 点击扇区查看 case');
+      const g4 = el('div', 'tvd-grid-2'); sec4.appendChild(g4);
+      const behDonutBlock = el('div', 'tvd-chart-block tvd-clickable');
+      behDonutBlock.appendChild(el('div', 'tvd-chart-title', `${curLab} · 行为动作构成（保存/点赞/点踩）`));
+      g4.appendChild(behDonutBlock);
+      const bsum = series.latest.summary;
+      donutChart(mkChart(behDonutBlock, 300), [['保存', bsum.behavior.save], ['点赞', bsum.behavior.like], ['点踩', bsum.behavior.unlike]], {
+        colors: ['#5AD8A6', '#5B8FF9', '#E8684A'], centerLabel: '行为',
+        onClick: (name) => { const m = { '保存': 'save', '点赞': 'like', '点踩': 'unlike' }; openCases(`${curLab} · ${name} case`, casesFor(curWeek, null, { behavior: m[name] }), `${name}行为`); },
+      });
+      const behTrendBlock = el('div', 'tvd-chart-block');
+      behTrendBlock.appendChild(el('div', 'tvd-chart-title', '保存 / 点赞 / 点踩率（全部周趋势）'));
+      g4.appendChild(behTrendBlock);
+      lineChart(mkChart(behTrendBlock, 300), series.labels, [
         { name: '保存率', data: series.trends.saveRate },
         { name: '点赞率', data: series.trends.likeRate },
         { name: '点踩率', data: series.trends.unlikeRate },
       ], { percent: true, yName: '比率' });
 
-      // ===== Top10 考点行为热力图 =====
-      const sec5 = section(body, `🔥 Top ${topN} 考点行为率 by 周（热力图）`);
+      const sec5 = section(body, `🔥 Top ${topN} ${dimLabel}行为率 by 周（热力图）`);
+      hint(sec5, '🔍 点击格子查看 case');
       const behCtrl = el('div', 'tvd-ctrls');
       const behSel = el('select', 'tvd-filter');
       behSel.innerHTML = `<option value="save">保存率</option><option value="like">点赞率</option><option value="unlike">点踩率</option>`;
@@ -364,59 +397,140 @@
         heatBox.innerHTML = '';
         const c = mkChart(heatBox, Math.max(320, series.focusKps.length * 30 + 80));
         heatmap(c, series.labels, series.focusKps, series.behaviorMatrix[behSel.value]);
+        c.getZr().setCursorStyle('pointer');
+        c.on('click', (p) => {
+          const wi = p.value[0], ki = p.value[1];
+          const wk = weeks[wi], kp = series.focusKps[ki];
+          if (!wk || kp == null) return;
+          openCases(`${kp} · ${series.labels[wi]} · ${BEH_LABEL[behSel.value]} case`, casesFor(wk, kp, { behavior: behSel.value }), `${dimLabel}「${kp}」｜${BEH_LABEL[behSel.value]}`);
+        });
       }
       behSel.addEventListener('change', paintHeat);
       paintHeat();
 
-      // ===== 行为异动预警 =====
       if (series.behaviorWarnings.length) {
-        const secW = section(body, '🚨 考点行为异动预警（点踩率环比上升 ≥ 5%）');
-        secW.appendChild(table(series.behaviorWarnings.map(w => [
+        const secW = section(body, '🚨 行为异动预警（点踩率环比上升 ≥ 5%）');
+        hint(secW, '🔍 点击行查看点踩 case');
+        const t = table(series.behaviorWarnings.map(w => [
           escapeHtml(w.kp),
           `<span style="color:var(--danger)">${pct(w.cur)}</span>`,
           pct(w.old),
           `<b style="color:var(--danger)">▲ ${pct(w.delta)}</b>`,
-        ]), ['考点', '本周点踩率', '上周点踩率', '环比上升']));
+        ]), [dimLabel, '本周点踩率', '上周点踩率', '环比上升']);
+        secW.appendChild(t);
+        attachRowClicks(t, series.behaviorWarnings.map(w => w.kp), (kp) => openCases(`${kp} · ${curLab} 点踩 case`, casesFor(curWeek, kp, { behavior: 'unlike' }), `异动「${kp}」`));
       }
 
-      // ===== Badcase =====
-      const sec6 = section(body, '⚠️ Badcase 追踪与归因');
+      // ============ 层级 5 · Badcase 质量 ============
+      layer(body, '5', 'Badcase 质量 · Quality', 'Badcase 率趋势、考点归因与高发预警');
+
+      const sec6 = section(body, '⚠️ Badcase 率趋势 & 一级类目归因');
+      hint(sec6, '🔍 点击扇区查看 Badcase');
       const g6 = el('div', 'tvd-grid-2'); sec6.appendChild(g6);
       const b6a = el('div', 'tvd-chart-block'); b6a.appendChild(el('div', 'tvd-chart-title', 'Badcase 率 by 周')); g6.appendChild(b6a);
       lineChart(mkChart(b6a, 280), series.labels, [{ name: 'Badcase 率', data: series.trends.badcaseRate }], { percent: true, showLabel: true });
-      const b6b = el('div', 'tvd-chart-block'); b6b.appendChild(el('div', 'tvd-chart-title', '最新周 Badcase 考点分布 Top')); g6.appendChild(b6b);
-      barChart(mkChart(b6b, 280), series.badcase.lastByKp.slice(0, topN));
+      const bcDonutBlock = el('div', 'tvd-chart-block tvd-clickable');
+      bcDonutBlock.appendChild(el('div', 'tvd-chart-title', `${curLab} · Badcase 一级类目归因`));
+      g6.appendChild(bcDonutBlock);
+      donutChart(mkChart(bcDonutBlock, 280), [...l1Cur.badcaseByKp.entries()].sort((a, b) => b[1] - a[1]), {
+        colors: ['#E8684A', '#F6BD16', '#FF9D4D', '#9270CA', '#5D7092', '#6DC8EC', '#FF99C3'], centerLabel: 'Bad',
+        onClick: (name) => openCases(`${name} · ${curLab} Badcase`, casesFor(curWeek, name, { granularity: 'l1', onlyBadcase: true }), `一级类目「${name}」Badcase`),
+      });
 
-      // 高 Badcase 率考点
-      const g6c = el('div', 'tvd-grid-2'); sec6.appendChild(g6c);
+      const secBd = section(body, `📊 ${curLab} Badcase ${dimLabel}分布 Top ${topN}`);
+      hint(secBd, '🔍 点击柱状查看 Badcase');
+      if (series.badcase.lastByKp.length) {
+        barChart(mkChart(secBd, Math.max(220, Math.min(series.badcase.lastByKp.length, topN) * 26 + 50)), series.badcase.lastByKp.slice(0, topN), {
+          onClick: (kp) => openCases(`${kp} · ${curLab} Badcase`, casesFor(curWeek, kp, { onlyBadcase: true }), `${dimLabel}「${kp}」Badcase`),
+        });
+      } else secBd.appendChild(el('div', 'tvd-empty', '本周无 Badcase'));
+
+      const secHi = section(body, `🔺 高 Badcase 率 & 新增高发${dimLabel}`);
+      hint(secHi, '🔍 点击行查看 Badcase');
+      const g6c = el('div', 'tvd-grid-2'); secHi.appendChild(g6c);
       const hbBlock = el('div', 'tvd-list-block');
-      hbBlock.appendChild(el('div', 'tvd-list-title', `高 Badcase 率考点 Top ${topN}（样本≥5）`));
+      hbBlock.appendChild(el('div', 'tvd-list-title', `高 Badcase 率${dimLabel} Top ${topN}（样本≥5）`));
       if (series.badcase.highRate.length) {
-        hbBlock.appendChild(table(series.badcase.highRate.map(o => [
+        const t = table(series.badcase.highRate.map(o => [
           escapeHtml(o.kp), `<b style="color:var(--danger)">${pct(o.rate)}</b>`, `${o.badcase}/${o.sample}`,
-        ]), ['考点', 'Badcase 率', 'Badcase/样本']));
+        ]), [dimLabel, 'Badcase 率', 'Badcase/样本']);
+        hbBlock.appendChild(t);
+        attachRowClicks(t, series.badcase.highRate.map(o => o.kp), (kp) => openCases(`${kp} · ${curLab} Badcase`, casesFor(curWeek, kp, { onlyBadcase: true }), `高 Badcase 率「${kp}」`));
       } else hbBlock.appendChild(el('div', 'tvd-empty', '无'));
       g6c.appendChild(hbBlock);
 
       const nbBlock = el('div', 'tvd-list-block');
-      nbBlock.appendChild(el('div', 'tvd-list-title', '新增 Badcase 高发考点（本周进入榜单）'));
+      nbBlock.appendChild(el('div', 'tvd-list-title', '新增 Badcase 高发（本周进入榜单）'));
       if (series.badcase.newHigh.length) {
-        nbBlock.appendChild(table(series.badcase.newHigh.map(o => [
+        const t = table(series.badcase.newHigh.map(o => [
           escapeHtml(o.kp), `<span style="color:var(--primary)">NEW</span>`, o.badcase,
-        ]), ['考点', '状态', '本周 Badcase 数']));
-      } else nbBlock.appendChild(el('div', 'tvd-empty', '无新增高发考点'));
+        ]), [dimLabel, '状态', '本周 Badcase 数']);
+        nbBlock.appendChild(t);
+        attachRowClicks(t, series.badcase.newHigh.map(o => o.kp), (kp) => openCases(`${kp} · ${curLab} Badcase`, casesFor(curWeek, kp, { onlyBadcase: true }), `新增高发「${kp}」`));
+      } else nbBlock.appendChild(el('div', 'tvd-empty', '无新增高发'));
       g6c.appendChild(nbBlock);
 
-      // 考点 Badcase 率趋势（多系列）
       if (weeks.length > 1) {
-        const sec7 = section(body, '📉 关注考点 Badcase 率周趋势');
+        const sec7 = section(body, `📉 关注${dimLabel} Badcase 率周趋势`);
         const trendSeries = series.badcase.rateTrend
           .filter(o => o.series.some(v => v != null && v > 0))
           .slice(0, 8)
           .map(o => ({ name: shortLabel(o.kp, 16), data: o.series }));
         if (trendSeries.length) lineChart(mkChart(sec7, 320), series.labels, trendSeries, { percent: true });
-        else sec7.appendChild(el('div', 'tvd-empty', '关注考点暂无 Badcase'));
+        else sec7.appendChild(el('div', 'tvd-empty', `关注${dimLabel}暂无 Badcase`));
       }
+
+      // ============ 层级 6 · Case 明细浏览 ============
+      layer(body, '6', 'Case 明细浏览 · Cases', '按考点/行为筛选；点击图片放大，点击卡片展开详情');
+      renderCaseBrowser(body, curWeek, series, dimLabel, curLab);
+    }
+
+    // ===== 底部 Case 浏览器（带筛选 + 分页） =====
+    function renderCaseBrowser(container, curWeek, series, dimLabel, curLab) {
+      const sec = section(container, `🗂️ Case 浏览器（${curLab}）`);
+      const bar = el('div', 'tvd-case-toolbar');
+      const kpSel = el('select', 'tvd-filter');
+      kpSel.innerHTML = `<option value="">全部${dimLabel}</option>` + series.focusKps.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(shortLabel(k, 24))}</option>`).join('');
+      const behSel = el('select', 'tvd-filter');
+      behSel.innerHTML = `<option value="">全部行为</option><option value="save">保存</option><option value="like">点赞</option><option value="unlike">点踩</option>`;
+      const bcWrap = el('label', 'tvd-ck'); const bcChk = el('input'); bcChk.type = 'checkbox';
+      bcWrap.appendChild(bcChk); bcWrap.appendChild(document.createTextNode(' 仅 Badcase'));
+      const search = el('input', 'tvd-search'); search.type = 'text'; search.placeholder = '搜索 prompt / 考点 / 场景…';
+      const cntEl = el('span', 'tvd-ck-label', '');
+      bar.appendChild(el('span', 'tvd-ck-label', `${dimLabel}：`)); bar.appendChild(kpSel);
+      bar.appendChild(el('span', 'tvd-ck-label', '行为：')); bar.appendChild(behSel);
+      bar.appendChild(bcWrap);
+      bar.appendChild(search);
+      bar.appendChild(cntEl);
+      sec.appendChild(bar);
+      const grid = el('div', 'tvd-case-grid'); sec.appendChild(grid);
+      const moreWrap = el('div', 'tvd-pagination'); sec.appendChild(moreWrap);
+      const PAGE = 24;
+      let shown = 0, filtered = [];
+      function renderMore() {
+        filtered.slice(shown, shown + PAGE).forEach(r => grid.appendChild(caseCard(r)));
+        shown = Math.min(shown + PAGE, filtered.length);
+        cntEl.textContent = `共 ${filtered.length} 条，已展示 ${shown}`;
+        moreWrap.innerHTML = '';
+        if (shown < filtered.length) {
+          const btn = el('button', 'tvd-btn', `加载更多（剩 ${filtered.length - shown}）`);
+          btn.addEventListener('click', renderMore);
+          moreWrap.appendChild(btn);
+        }
+      }
+      function recompute() {
+        filtered = casesFor(curWeek, kpSel.value || null, {
+          behavior: behSel.value || undefined,
+          onlyBadcase: bcChk.checked,
+          search: search.value.trim() || undefined,
+        });
+        shown = 0; grid.innerHTML = ''; renderMore();
+      }
+      kpSel.addEventListener('change', recompute);
+      behSel.addEventListener('change', recompute);
+      bcChk.addEventListener('change', recompute);
+      let st; search.addEventListener('input', () => { clearTimeout(st); st = setTimeout(recompute, 250); });
+      recompute();
     }
 
     // 哑铃图：每个考点一行，连线表示上周→本周排名移动（清晰不交叉）
@@ -517,14 +631,152 @@
       });
     }
 
-    function barChart(c, pairs) {
+    function barChart(c, pairs, opts) {
+      opts = opts || {};
       const top = pairs.slice().reverse();
       c.setOption({
         tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
         grid: { left: 160, right: 30, top: 10, bottom: 30 },
         xAxis: { type: 'value', axisLabel: { color: '#666' } },
         yAxis: { type: 'category', data: top.map(p => shortLabel(p[0], 18)), axisLabel: { color: '#444' } },
-        series: [{ type: 'bar', data: top.map(p => p[1]), barWidth: 14, itemStyle: { color: '#E8684A' }, label: { show: true, position: 'right', color: '#444' } }],
+        series: [{ type: 'bar', data: top.map(p => p[1]), barWidth: 14, itemStyle: { color: opts.color || '#E8684A' }, label: { show: true, position: 'right', color: '#444' } }],
+      });
+      if (opts.onClick) c.on('click', (p) => { const pair = top[p.dataIndex]; if (pair) opts.onClick(pair[0]); });
+    }
+
+    // ===== 圆环图（占比构成，可点击下钻 case） =====
+    function donutChart(c, pairs, opts) {
+      opts = opts || {};
+      const data = pairs.filter(p => p[1] > 0).map(p => ({ name: String(p[0]), value: p[1] }));
+      if (!data.length) { c.setOption({ title: { text: '无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 13 } } }); return; }
+      const total = data.reduce((a, d) => a + d.value, 0);
+      c.setOption({
+        tooltip: { trigger: 'item', confine: true, formatter: (p) => `${escapeHtml(p.name)}<br/><b>${p.value}</b>（${p.percent}%）` },
+        legend: { type: 'scroll', orient: 'vertical', right: 4, top: 'middle', icon: 'circle', textStyle: { fontSize: 11, color: '#555' }, formatter: (n) => shortLabel(n, 11) },
+        color: opts.colors || LINE_COLORS,
+        graphic: opts.centerLabel ? [{ type: 'text', left: '37%', top: '46%', style: { text: opts.centerLabel + '\n' + total, textAlign: 'center', fill: '#333', fontSize: 13, fontWeight: 'bold' } }] : undefined,
+        series: [{
+          type: 'pie', radius: ['46%', '70%'], center: ['38%', '52%'], avoidLabelOverlap: true,
+          itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
+          label: { show: false }, labelLine: { show: false },
+          emphasis: { scale: true, scaleSize: 6 },
+          data,
+        }],
+      });
+      if (opts.onClick) { c.getZr().setCursorStyle('pointer'); c.on('click', (p) => { if (p.name) opts.onClick(p.name); }); }
+    }
+
+    // ===== 层级分组标题 =====
+    function layer(container, no, title, desc) {
+      const wrap = el('div', 'tvd-layer');
+      wrap.appendChild(el('div', 'tvd-layer-no', String(no)));
+      const txt = el('div', 'tvd-layer-text');
+      txt.appendChild(el('div', 'tvd-layer-title', escapeHtml(title)));
+      if (desc) txt.appendChild(el('div', 'tvd-layer-desc', escapeHtml(desc)));
+      wrap.appendChild(txt);
+      wrap.appendChild(el('div', 'tvd-layer-line'));
+      container.appendChild(wrap);
+    }
+
+    // ===== Case 下钻：按维度/粒度/行为过滤当前周明细行 =====
+    const BEH_LABEL = { save: '保存', like: '点赞', unlike: '点踩' };
+    function casesFor(weekObj, key, o) {
+      o = o || {};
+      const dim = dimSel.value;
+      const gran = o.granularity || granSel.value;
+      const defs = AGG().DEFAULT_DEFS;
+      const rows = (weekObj && weekObj.parsed && weekObj.parsed.rows) || [];
+      return rows.filter((r) => {
+        if (key != null) {
+          const keys = AGG().keysOf(r, dim, gran);
+          if (!keys.includes(key)) return false;
+        }
+        const raw = r._raw || {};
+        if (o.onlyBadcase && !defs.isBadcase(raw)) return false;
+        if (o.behavior === 'save' && !defs.isSave(raw)) return false;
+        if (o.behavior === 'like' && !defs.isLike(raw)) return false;
+        if (o.behavior === 'unlike' && !defs.isUnlike(raw)) return false;
+        if (o.search) {
+          const hay = ((r.prompt || '') + ' ' + (r.ability_full || '') + ' ' + (r.scene_target || '')).toLowerCase();
+          if (!hay.includes(o.search.toLowerCase())) return false;
+        }
+        return true;
+      });
+    }
+
+    function caseCard(r) {
+      const defs = AGG().DEFAULT_DEFS; const raw = r._raw || {};
+      const imgs = (r.output_image_urls && r.output_image_urls.length ? r.output_image_urls : r.input_image_urls) || [];
+      const thumb = imgs[0];
+      const badges = [];
+      if (defs.isBadcase(raw)) badges.push('<span class="tvd-case-flag danger">Badcase</span>');
+      if (defs.isUnlike(raw)) badges.push('<span class="tvd-case-flag warn">点踩</span>');
+      if (defs.isLike(raw)) badges.push('<span class="tvd-case-flag ok">点赞</span>');
+      if (defs.isSave(raw)) badges.push('<span class="tvd-case-flag ok">保存</span>');
+      if (r.confidence === 'low') badges.push('<span class="tvd-case-flag info">low_conf</span>');
+      const card = el('div', 'tvd-case-card');
+      card.innerHTML = `
+        ${thumb ? `<img class="tvd-thumb tvd-case-thumb" src="${escapeHtml(thumb)}" alt="case" loading="lazy" referrerpolicy="no-referrer" />` : '<div class="tvd-case-noimg">无图片</div>'}
+        <div class="tvd-case-body">
+          <div class="tvd-case-prompt">${escapeHtml(shortLabel(r.prompt || '（无 prompt）', 72))}</div>
+          <div class="tvd-case-tags">
+            ${r.ability_full ? `<div class="tvd-case-tag" title="${escapeHtml(r.ability_full)}">🎯 ${escapeHtml(r.ability_full)}</div>` : ''}
+            ${r.scene_target ? `<div class="tvd-case-tag" title="${escapeHtml(r.scene_target)}">🏷️ ${escapeHtml(r.scene_target)}</div>` : ''}
+          </div>
+          <div class="tvd-case-flags">${badges.join('')}</div>
+        </div>
+        <div class="tvd-case-detail"></div>`;
+      const body = card.querySelector('.tvd-case-body');
+      const detail = card.querySelector('.tvd-case-detail');
+      body.addEventListener('click', () => {
+        if (detail.classList.contains('show')) { detail.classList.remove('show'); return; }
+        if (!detail.dataset.built) { detail.innerHTML = caseDetailHtml(r); detail.dataset.built = '1'; }
+        detail.classList.add('show');
+      });
+      return card;
+    }
+
+    function caseDetailHtml(r) {
+      const raw = r._raw || {};
+      const rows = [];
+      if (r.id) rows.push(`<div class="tvd-case-detail-row"><b>数据ID：</b>${escapeHtml(r.id)}</div>`);
+      rows.push(`<div class="tvd-case-detail-row"><b>Prompt：</b>${escapeHtml(r.prompt || '—')}</div>`);
+      if (r.ability_full) rows.push(`<div class="tvd-case-detail-row"><b>考点：</b>${escapeHtml(r.ability_full)}</div>`);
+      if (r.scene_target) rows.push(`<div class="tvd-case-detail-row"><b>场景：</b>${escapeHtml(r.scene_target)}</div>`);
+      if (r.output_form) rows.push(`<div class="tvd-case-detail-row"><b>输出形态：</b>${escapeHtml(r.output_form)}</div>`);
+      if (r.search_need) rows.push(`<div class="tvd-case-detail-row"><b>搜索需求：</b>${escapeHtml(r.search_need)}</div>`);
+      const beh = [];
+      if (Number(raw.click_picture_save_cnt) > 0) beh.push('保存×' + raw.click_picture_save_cnt);
+      if (Number(raw.like_cnt) > 0) beh.push('点赞×' + raw.like_cnt);
+      if (Number(raw.unlike_cnt) > 0) beh.push('点踩×' + raw.unlike_cnt);
+      rows.push(`<div class="tvd-case-detail-row"><b>用户行为：</b>${beh.length ? escapeHtml(beh.join('，')) : '无'}</div>`);
+      if (r.reasoning) rows.push(`<div class="tvd-case-detail-row"><b>打标理由：</b>${escapeHtml(shortLabel(r.reasoning, 300))}</div>`);
+      const ins = (r.input_image_urls || []), outs = (r.output_image_urls || []);
+      let imgHtml = '';
+      if (ins.length) imgHtml += `<div class="tvd-case-detail-row"><b>输入图：</b></div><div class="tvd-case-detail-imgs">${ins.map(u => `<img class="tvd-thumb" src="${escapeHtml(u)}" referrerpolicy="no-referrer" />`).join('')}</div>`;
+      if (outs.length) imgHtml += `<div class="tvd-case-detail-row"><b>输出图：</b></div><div class="tvd-case-detail-imgs">${outs.map(u => `<img class="tvd-thumb" src="${escapeHtml(u)}" referrerpolicy="no-referrer" />`).join('')}</div>`;
+      return rows.join('') + imgHtml;
+    }
+
+    const CASE_LIMIT = 48;
+    function openCases(title, rows, sub) {
+      if (!cfg.openModal) return;
+      const wrap = el('div', 'tvd-case-wrap');
+      const cnt = rows.length;
+      wrap.appendChild(el('div', 'tvd-case-sub', (sub ? sub + ' · ' : '') + `共 ${cnt} 条` + (cnt > CASE_LIMIT ? `（展示前 ${CASE_LIMIT}）` : '')));
+      if (!cnt) { wrap.appendChild(el('div', 'tvd-empty', '无匹配 case')); cfg.openModal(title, wrap, { wide: true }); return; }
+      const grid = el('div', 'tvd-case-grid');
+      rows.slice(0, CASE_LIMIT).forEach((r) => grid.appendChild(caseCard(r)));
+      wrap.appendChild(grid);
+      cfg.openModal(title, wrap, { wide: true });
+    }
+
+    function attachRowClicks(tbl, keys, handler) {
+      const trs = tbl.querySelectorAll('tbody tr');
+      trs.forEach((tr, i) => {
+        if (keys[i] == null) return;
+        tr.classList.add('tvd-row-click');
+        tr.addEventListener('click', () => handler(keys[i], i));
       });
     }
 
