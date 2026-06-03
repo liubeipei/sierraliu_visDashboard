@@ -506,9 +506,16 @@
       <span class="sb-logo-text">PromptViz</span>
     </div>
 
-    <div class="sb-section">主面板</div>
+    <div class="sb-section">周追踪</div>
     <nav class="sb-nav" aria-label="主导航">
-      <div class="sb-item active" data-route="t2i" role="button" tabindex="0" aria-label="打开文生图面板">
+      <div class="sb-item active" data-route="weekly" role="button" tabindex="0" aria-label="打开周追踪看板">
+        <span class="sb-icon">📅</span>
+        <span class="sb-label">周追踪看板</span>
+        <span class="sb-badge" id="badge-weekly" style="display:none">0</span>
+      </div>
+
+      <div class="sb-section">主面板</div>
+      <div class="sb-item" data-route="t2i" role="button" tabindex="0" aria-label="打开文生图面板">
         <span class="sb-icon">📝</span>
         <span class="sb-label">文生图</span>
         <span class="sb-badge" id="badge-t2i" style="display:none">0</span>
@@ -545,7 +552,7 @@
 
   <div class="main">
     <header class="main-header">
-      <div class="mh-title" id="mhTitle">文生图</div>
+      <div class="mh-title" id="mhTitle">周追踪看板</div>
       <div class="mh-spacer"></div>
       <div class="mh-meta" id="mhMeta">尚未上传数据</div>
     </header>
@@ -581,6 +588,8 @@
 <script defer src="assets/tagging-viz-dashboard.js"></script>
 <script defer src="assets/tagging-report-writer.js"></script>
 <script defer src="assets/tagging-llm-analyst.js"></script>
+<script defer src="assets/tagging-weekly-aggregator.js"></script>
+<script defer src="assets/tagging-weekly-dashboard.js"></script>
 
 <script>
 window.addEventListener('DOMContentLoaded', function () {
@@ -596,9 +605,17 @@ window.addEventListener('DOMContentLoaded', function () {
     parsed: { t2i: null, i2i: null },
     projectName: { t2i: '', i2i: '' }, // 用户起的项目名
     reports: [],
-    activeRoute: 't2i',
+    activeRoute: 'weekly',
     activeReportId: null,
     sidebarCollapsed: false,
+    weekly: {
+      weeks: [],            // [{ id, label, weekStart, weekEnd, parsed }]
+      taxonomy: null,       // { ability:{items}, scene:{items} }
+      dimension: 'ability',
+      granularity: 'full',
+      loaded: false,
+      loading: false,
+    },
   };
 
   function loadPersistedState() {
@@ -795,6 +812,7 @@ window.addEventListener('DOMContentLoaded', function () {
     };
     set('badge-t2i', state.parsed.t2i ? state.parsed.t2i.rows.length : 0);
     set('badge-i2i', state.parsed.i2i ? state.parsed.i2i.rows.length : 0);
+    set('badge-weekly', state.weekly.weeks.length);
     set('badge-reports', state.reports.length);
   }
 
@@ -804,7 +822,7 @@ window.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.sb-item').forEach(it => {
       it.classList.toggle('active', it.dataset.route === route);
     });
-    const titleMap = { t2i: '文生图', i2i: '图生图', reports: '分析报告', settings: 'LLM 配置', about: '使用说明' };
+    const titleMap = { t2i: '文生图', i2i: '图生图', weekly: '周追踪看板', reports: '分析报告', settings: 'LLM 配置', about: '使用说明' };
     document.getElementById('mhTitle').textContent = titleMap[route] || route;
     renderRoute(route);
   }
@@ -812,6 +830,7 @@ window.addEventListener('DOMContentLoaded', function () {
     const main = document.getElementById('mainContent');
     main.innerHTML = '';
     if (route === 't2i' || route === 'i2i') renderDataPanel(main, route);
+    else if (route === 'weekly') renderWeeklyPanel(main);
     else if (route === 'reports') renderReportsPanel(main);
     else if (route === 'settings') renderSettingsPanel(main);
     else if (route === 'about') renderAboutPanel(main);
@@ -829,9 +848,166 @@ window.addEventListener('DOMContentLoaded', function () {
         const at = p.meta && p.meta.generated_at ? new Date(p.meta.generated_at).toLocaleString() : '历史数据';
         m.textContent = `${name ? name + ' · ' : ''}${p.rows.length} 条 · ${at}`;
       }
+    } else if (r === 'weekly') {
+      const n = state.weekly.weeks.length;
+      m.textContent = n ? `${n} 周数据 · ${state.weekly.weeks[0].label} → ${state.weekly.weeks[n - 1].label}` : '尚未加载周数据';
     } else if (r === 'reports') {
       m.textContent = `${state.reports.length} 份报告`;
     } else m.textContent = '';
+  }
+
+  // ==== Weekly tracking panel ====
+  const WEEKLY_MANIFEST = 'dataset/manifest.json';
+
+  async function fetchJson(path) {
+    const resp = await fetch(path, { cache: 'no-cache' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' @ ' + path);
+    return resp.json();
+  }
+
+  async function parseWeekFile(filePath, opts) {
+    const resp = await fetch(filePath, { cache: 'no-cache' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ' @ ' + filePath);
+    const buf = await resp.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+    return window.TaggingDataAdapter.parse(rawRows, opts);
+  }
+
+  async function loadWeeklyData() {
+    if (state.weekly.loaded || state.weekly.loading) return;
+    state.weekly.loading = true;
+    try {
+      const manifest = await fetchJson(WEEKLY_MANIFEST);
+      const tax = { ability: null, scene: null };
+      if (manifest.taxonomy) {
+        if (manifest.taxonomy.ability) tax.ability = await fetchJson(manifest.taxonomy.ability);
+        if (manifest.taxonomy.scene) tax.scene = await fetchJson(manifest.taxonomy.scene);
+      }
+      state.weekly.taxonomy = tax;
+
+      const baseOpts = {
+        dataType: manifest.dataType || 'i2i',
+        imageMode: manifest.imageMode || 'single',
+        turnMode: manifest.turnMode || 'single',
+      };
+      const weeks = [];
+      for (const w of (manifest.weeks || [])) {
+        try {
+          const parsed = await parseWeekFile(w.file, baseOpts);
+          weeks.push({ id: w.id, label: w.label, weekStart: w.weekStart, weekEnd: w.weekEnd, parsed });
+        } catch (e) {
+          console.warn('[周看板] 解析失败:', w.file, e.message);
+        }
+      }
+      weeks.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
+      state.weekly.weeks = weeks;
+      state.weekly.loaded = true;
+      updateBadges();
+    } finally {
+      state.weekly.loading = false;
+    }
+  }
+
+  function paintWeekly(container) {
+    const mount = container.querySelector('#weeklyMount') || container;
+    window.TaggingWeeklyDashboard.render(mount, {
+      weeks: state.weekly.weeks,
+      taxonomy: state.weekly.taxonomy,
+      dimension: state.weekly.dimension,
+      granularity: state.weekly.granularity,
+      onConfigChange: (c) => {
+        state.weekly.dimension = c.dimension;
+        state.weekly.granularity = c.granularity;
+      },
+    });
+  }
+
+  function renderWeeklyPanel(container) {
+    container.innerHTML = `
+      <div class="tvd-banner">
+        <span class="tvd-pill tvd-pill-info">周聚合 · WoW 追踪</span>
+        <span class="tvd-meta" id="weeklyMeta">加载中…</span>
+        <span class="tvd-banner-actions">
+          <button class="tvd-banner-btn" id="weeklyReload">🔄 重新加载</button>
+          <button class="tvd-banner-btn tvd-banner-btn-primary" id="weeklyUpload">➕ 上传本周数据</button>
+        </span>
+      </div>
+      <div id="weeklyMount"></div>
+    `;
+    const mount = container.querySelector('#weeklyMount');
+    const metaEl = container.querySelector('#weeklyMeta');
+
+    container.querySelector('#weeklyReload').addEventListener('click', () => {
+      state.weekly.loaded = false;
+      state.weekly.weeks = [];
+      renderWeeklyPanel(container);
+    });
+    container.querySelector('#weeklyUpload').addEventListener('click', () => openWeeklyUpload(container));
+
+    if (state.weekly.loaded) {
+      metaEl.textContent = `${state.weekly.weeks.length} 周`;
+      paintWeekly(container);
+      updateMetaBar();
+      return;
+    }
+
+    mount.innerHTML = '<div class="tvd-empty">⏳ 正在从 dataset 加载历史周并解析…</div>';
+    loadWeeklyData().then(() => {
+      if (state.activeRoute !== 'weekly') return;
+      if (!state.weekly.weeks.length) {
+        mount.innerHTML = '<div class="tvd-empty">未能加载到周数据，请检查 dataset/manifest.json，或点「上传本周数据」</div>';
+        return;
+      }
+      metaEl.textContent = `${state.weekly.weeks.length} 周`;
+      paintWeekly(container);
+      updateMetaBar();
+    }).catch(e => {
+      mount.innerHTML = `<div class="tvd-empty">加载失败：${escapeHtml(e.message)}<br/><span style="font-size:11px;">提示：需通过 http(s) 访问（如本地 node server.js 或 GitHub Pages），不能直接用 file:// 打开</span></div>`;
+    });
+  }
+
+  function openWeeklyUpload(container) {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <div class="llm-cfg-row">
+        <label>周标识（用于图例与对比）</label>
+        <input type="text" id="wkLabel" placeholder="例如：W16 (04/15–04/21)" />
+      </div>
+      <div class="llm-cfg-row">
+        <label>起始日期(weekStart, 用于排序)</label>
+        <input type="text" id="wkStart" placeholder="2026-04-15" />
+      </div>
+      <label class="drop-zone" id="wkDrop" style="margin-top:8px;">
+        <input type="file" accept=".xlsx,.xls,.csv" />
+        <div class="drop-zone-icon">📤</div>
+        <div class="drop-zone-title">点击选择本周 xlsx</div>
+        <div class="drop-zone-desc">将按当前数据类型解析并追加到周序列</div>
+      </label>
+    `;
+    openModal('➕ 上传本周数据', wrap);
+    const input = wrap.querySelector('input[type=file]');
+    input.addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const label = (wrap.querySelector('#wkLabel').value || '').trim() || file.name.replace(/\.(xlsx|xls|csv)$/i, '');
+      const weekStart = (wrap.querySelector('#wkStart').value || '').trim() || ('9999-' + label);
+      try {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+        const parsed = window.TaggingDataAdapter.parse(rawRows, { dataType: 'i2i', imageMode: 'single', turnMode: 'single' });
+        state.weekly.weeks.push({ id: 'wk-' + Date.now(), label, weekStart, weekEnd: '', parsed });
+        state.weekly.weeks.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
+        state.weekly.loaded = true;
+        updateBadges();
+        closeModal();
+        toast(`✅ 已追加 ${label} · ${parsed.rows.length} 条`);
+        renderWeeklyPanel(container);
+      } catch (err) {
+        toast('❌ 解析失败：' + err.message, 4000);
+      }
+    });
   }
 
   // ==== Data panel ====
@@ -1521,7 +1697,7 @@ window.addEventListener('DOMContentLoaded', function () {
   async function bootstrap() {
     const loadedFromServer = await loadServerState();
     const loadedFromLocal = loadedFromServer ? false : loadLocalDataState();
-    navigate('t2i');
+    navigate('weekly');
     updateBadges();
     if (loadedFromServer) {
       toast('✅ 已从云端恢复历史数据');

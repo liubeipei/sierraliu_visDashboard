@@ -262,6 +262,67 @@
     return parsedJson;
   }
 
+  // ---------- generic streaming completion ----------
+  async function stream({ system, user, config, onChunk, onDone, onError }) {
+    config = config || getConfig();
+    const ctrl = new AbortController();
+    const url = (config.apiBase || DEFAULTS.apiBase).replace(/\/+$/, '') + '/chat/completions';
+    const messages = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({ role: 'user', content: user || '' });
+    const body = {
+      model: config.model || DEFAULTS.model,
+      messages,
+      temperature: config.temperature == null ? 0.3 : Number(config.temperature),
+      stream: true,
+    };
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (config.apiKey || '') },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+      }
+      let full = '';
+      if (res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buf = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const payload = trimmed.slice(5).trim();
+            if (payload === '[DONE]') continue;
+            try {
+              const json = JSON.parse(payload);
+              const delta = json.choices?.[0]?.delta?.content || '';
+              if (delta) { full += delta; onChunk && onChunk(delta); }
+            } catch { /* skip */ }
+          }
+        }
+      } else {
+        const json = await res.json();
+        full = json.choices?.[0]?.message?.content || '';
+        if (full) onChunk && onChunk(full);
+      }
+      onDone && onDone(full);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      onError && onError(e);
+    }
+    return ctrl;
+  }
+
   // ---------- config panel ----------
   function renderConfigPanel(container, opts) {
     opts = opts || {};
@@ -341,6 +402,7 @@
   if (typeof window !== 'undefined') {
     window.TaggingLLMAnalyst = {
       analyze,
+      stream,
       suggestKpiCards,
       renderConfigPanel,
       getConfig,
