@@ -2,3 +2,8 @@
 .workbuddy/
 data/state.json
 ~$*
+
+# 内部数据：dataset 下的 Excel 不入库（仅本地保留）
+dataset/**/*.xlsx
+dataset/**/*.xls
+dataset/**/*.csv
